@@ -1,0 +1,117 @@
+#https://github.com/Animosity/CraftIRC/wiki/Complete-idiot's-introduction-to-yaml
+#Docker-compose for financielemodule
+version: '3.7'
+
+secrets:
+  konga_user_seed:
+    file: ./userdb.data
+  kong_node_seed:
+    file: ./kong_node.data
+    
+services:
+  kong-database:
+    image: postgres:9.6
+    restart: always
+    networks:
+      - kong-net
+    environment:
+      POSTGRES_USER: kong
+      POSTGRES_DB: kong
+      POSTGRES_PASSWORD: kong
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "kong"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+  kong-migration:
+    image: kong:latest
+    command: "kong migrations bootstrap"
+    networks:
+      - kong-net
+    restart: on-failure
+    environment:
+      KONG_PG_HOST: kong-database
+      KONG_DATABASE: postgres
+      KONG_PG_USER: kong
+      KONG_PG_PASSWORD: kong
+      KONG_CASSANDRA_CONTACT_POINTS: kong-database
+      
+    links:
+      - kong-database
+    depends_on:
+      - kong-database
+      
+  kong:
+    image: kong:2.8.0-alpine
+    volumes:
+      -  '.:/kong/declarative/'
+    
+    environment: 
+      - KONG_DECLARATIVE_CONFIG=/kong/declarative/kong.yml
+      - KONG_DATABASE=postgres
+      - KONG_PG_HOST=host.docker.internal
+      - KONG_PG_USER=kong
+      - KONG_PG_PASSWORD=kong
+      - KONG_PROXY_ACCESS_LOG=/dev/stdout
+      - KONG_ADMIN_ACCESS_LOG=/dev/stdout
+      - KONG_PROXY_ERROR_LOG=/dev/stderr
+      - KONG_ADMIN_ERROR_LOG=/dev/stderr
+      - KONG_ADMIN_LISTEN=0.0.0.0:9001, 0.0.0.0:9444 ssl
+    networks:
+      - kong-net
+    depends_on:
+      - kong-migration
+      - kong-database
+    ports:
+        - 7000:8000
+        - 7443:8443
+        - 9001:9001
+        - 9000:9000
+        - 9443:9443
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://kong:8001"]
+      interval: 5s
+      timeout: 2s
+      retries: 15
+      
+  konga:
+    image: pantsel/konga
+    networks: 
+      - kong-net
+    ports:
+    - 1338:1338
+    - 1337:1337
+    secrets:
+     - konga_user_seed
+     - kong_node_seed
+    environment:
+      - NODE_ENV=Production
+      - TOKEN_SECRET=Roxit#123
+      - PORT=1337
+      - NO_AUTH=false
+      - KONGA_SEED_KONG_NODE_DATA_SOURCE_FILE=/run/secrets/kong_node_seed
+      - KONGA_SEED_USER_DATA_SOURCE_FILE=/run/secrets/konga_user_seed
+    depends_on:
+      - kong
+  testapis:
+    build: 
+     dockerfile: TestApis/Dockerfile
+     context: ./Apis/TestApis
+    environment:
+      - ASPNETCORE_ENVIRONMENT=development
+
+    ports:
+      - 1400:80
+      - 1401:443
+    networks: 
+      - kong-net
+    
+    depends_on:
+      - kong
+      - kong-database
+        
+   
+networks:
+  kong-net:
